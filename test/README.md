@@ -1,4 +1,4 @@
-System testing for [modbus library](https://github.com/grid-x/modbus)
+System testing for [modbus library](https://github.com/gwicki-meier/modbus)
 
 Modbus simulator
 ----------------

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/grid-x/modbus"
+	"github.com/gwicki-meier/modbus"
 )
 
 const (

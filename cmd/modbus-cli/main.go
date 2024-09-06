@@ -15,8 +15,8 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/grid-x/modbus"
 	"github.com/grid-x/serial"
+	"github.com/gwicki-meier/modbus"
 )
 
 func main() {
