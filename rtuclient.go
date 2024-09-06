@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"time"
+
+	"github.com/grid-x/serial"
 )
 
 const (
@@ -48,12 +50,40 @@ type RTUClientHandler struct {
 	rtuSerialTransporter
 }
 
+// NonStandardModbus for PI500 inverters
+func (mb *RTUClientHandler) enableNonStandardModbus() {
+	mb.rtuPackager.nonStandardModbus = true
+	mb.rtuSerialTransporter.nonStandardModbus = true
+}
+
 // NewRTUClientHandler allocates and initializes a RTUClientHandler.
 func NewRTUClientHandler(address string) *RTUClientHandler {
 	handler := &RTUClientHandler{}
 	handler.Address = address
 	handler.Timeout = serialTimeout
 	handler.IdleTimeout = serialIdleTimeout
+	return handler
+}
+
+// NewRTUClientHandler allocates and initializes a RTUClientHandler.
+func NewRTUClientHandlerRS485(address string, nonStandardModbus bool) *RTUClientHandler {
+	rs485 := serial.RS485Config{
+		Enabled:            true,
+		DelayRtsBeforeSend: 0,
+		DelayRtsAfterSend:  0,
+		RtsHighDuringSend:  true,
+		RtsHighAfterSend:   false,
+		RxDuringTx:         false,
+	}
+	handler := &RTUClientHandler{}
+	handler.Address = address
+	handler.Timeout = serialTimeout
+	handler.IdleTimeout = serialIdleTimeout
+	handler.RS485 = rs485
+	if nonStandardModbus {
+		handler.enableNonStandardModbus()
+	}
+
 	return handler
 }
 
@@ -65,7 +95,8 @@ func RTUClient(address string) Client {
 
 // rtuPackager implements Packager interface.
 type rtuPackager struct {
-	SlaveID byte
+	SlaveID           byte
+	nonStandardModbus bool
 }
 
 // SetSlave sets modbus slave id for the next client operations
@@ -131,19 +162,25 @@ func (mb *rtuPackager) Decode(adu []byte) (pdu *ProtocolDataUnit, err error) {
 	// Function code & data
 	pdu = &ProtocolDataUnit{}
 	pdu.FunctionCode = adu[1]
-	pdu.Data = adu[2 : length-2]
+	// Non Standard Modbus, response dataLength with 2 bytes. SlaveID(1) - FunctionCode(1) - length(2) - CRC(2)
+	if mb.nonStandardModbus {
+		pdu.Data = adu[3 : length-2]
+	} else {
+		pdu.Data = adu[2 : length-2]
+	}
 	return
 }
 
 // rtuSerialTransporter implements Transporter interface.
 type rtuSerialTransporter struct {
 	serialPort
+	nonStandardModbus bool
 }
 
 // InvalidLengthError is returned by readIncrementally when the modbus response would overflow buffer
 // implemented to simplify testing
 type InvalidLengthError struct {
-	length byte // length received which triggered the error
+	length uint16 // length received which triggered the error
 }
 
 // Error implements the error interface
@@ -152,11 +189,14 @@ func (e *InvalidLengthError) Error() string {
 }
 
 // readIncrementally reads incrementally
-func readIncrementally(slaveID, functionCode byte, r io.Reader, deadline time.Time) ([]byte, error) {
+func readIncrementally(slaveID, functionCode byte, r io.Reader, deadline time.Time, nonStandardModbus bool) ([]byte, error) {
 	data := make([]byte, rtuMaxSize)
 
 	state := stateSlaveID
-	var length, toRead byte
+	var length, toRead uint16
+	var lenghtByteCount uint8
+	var lengthHi byte
+	var lengthLo byte
 	var n, crcCount int
 
 	for {
@@ -217,15 +257,33 @@ func readIncrementally(slaveID, functionCode byte, r io.Reader, deadline time.Ti
 				toRead = 1
 			}
 		case stateReadLength:
-			// read length byte
-			length = buf[0]
-			// max length = rtuMaxSize - SlaveID(1) - FunctionCode(1) - length(1) - CRC(2)
+
+			// Non Standard Modbus, response dataLength with 2 bytes. SlaveID(1) - FunctionCode(1) - length(2) - CRC(2)
+			if nonStandardModbus {
+
+				switch lenghtByteCount {
+				case 0:
+					lengthHi = buf[0]
+					lenghtByteCount++
+					n++
+					continue
+				case 1:
+					lengthLo = buf[0]
+				}
+				// read length
+				length = uint16(lengthHi) + uint16(lengthLo)
+			} else {
+				// read length byte
+				length = uint16(buf[0])
+			}
+			// Standard Modbus: max length = rtuMaxSize - SlaveID(1) - FunctionCode(1) - length(1) - CRC(2)
+			// Non Standard Modbus: max length = rtuMaxSize - SlaveID(1) - FunctionCode(1) - length(2) - CRC(2)
 			if length > rtuMaxSize-5 || length == 0 {
 				return nil, &InvalidLengthError{length: length}
 			}
 
-			toRead = length
-			data[n] = length
+			toRead += uint16(length)
+			data[n] = buf[0]
 			n++
 			state = stateReadPayload
 		case stateReadPayload:
@@ -270,7 +328,7 @@ func (mb *rtuSerialTransporter) Send(aduRequest []byte) (aduResponse []byte, err
 	bytesToRead := calculateResponseLength(aduRequest)
 	time.Sleep(mb.calculateDelay(len(aduRequest) + bytesToRead))
 
-	data, err := readIncrementally(aduRequest[0], aduRequest[1], mb.port, time.Now().Add(mb.Config.Timeout))
+	data, err := readIncrementally(aduRequest[0], aduRequest[1], mb.port, time.Now().Add(mb.Config.Timeout), mb.nonStandardModbus)
 	mb.logf("modbus: recv % x\n", data[:])
 	aduResponse = data
 	return

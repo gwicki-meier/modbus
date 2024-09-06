@@ -331,7 +331,7 @@ func Test_readIncrementally(t *testing.T) {
 	}
 	for _, tc := range testcases {
 		t.Run(tc.description, func(t *testing.T) {
-			got, err := readIncrementally(tc.slaveID, tc.functionCode, bytes.NewBuffer(tc.data), time.Now().Add(time.Second*5))
+			got, err := readIncrementally(tc.slaveID, tc.functionCode, bytes.NewBuffer(tc.data), time.Now().Add(time.Second*5), false)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("expected error but did not get one")
